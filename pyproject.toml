@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pywccf"
+version = "0.1.0"
+description = "Three-dimensional cosmic-web cross-correlation function (3D-WCCF) in the local tidal eigenframe"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Hongfei Yu", email = "yuhongfei@mail.ustc.edu.cn" },
+  { name = "Huiyuan Wang", email = "whywang@ustc.edu.cn" },
+]
+keywords = ["cosmology", "cosmic web", "tidal field", "dark matter halos",
+            "correlation function", "assembly bias"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "h5py>=3.8",
+  "matplotlib>=3.7",
+  "pyyaml>=6.0",
+  "scikit-learn>=1.2",
+  "pyhipp @ git+https://github.com/ChenYangyao/pyhipp.git",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+fast = ["numba>=0.57"]
+catalog = ["numba>=0.57", "pandas"]
+notebook = ["jupyter", "ipykernel"]
+test = ["pytest"]
+
+[project.scripts]
+pywccf-run = "pywccf.pipeline.runner:main"
+pywccf-combine = "pywccf.pipeline.combine:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
