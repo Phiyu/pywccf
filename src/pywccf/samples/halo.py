@@ -1,133 +1,56 @@
+"""Host halos (FoF groups / distinct halos)."""
 from __future__ import annotations
-from typing import Self
+
 import numpy as np
-from pathlib import Path
-import h5py
-from pyhipp.core import abc
+
+from .tracer import Tracer
+
+__all__ = ["HaloSample"]
 
 
-class HaloSample(abc.HasLog, abc.HasDictRepr):
-    
-    repr_attr_keys = ('n_objs',)
-    
-    '''
-    A simple halo sample.
-    
-    @data: attributes of the halos, e.g. {'ra': ..., 'dec': ...}.
-    @verbose: whether to print log messages.
-    @copy: whether to copy the data.
-    '''
-    def __init__(self, data: dict[str, np.ndarray], verbose=True, copy=True):
+class HaloSample(Tracer):
+    """Distinct (host) halos.
 
-        keys = tuple(data.keys())
-        n_objs = len(data[keys[0]])
-        for k, v in data.items():
-            assert len(v) == n_objs, f"Size of {k} != {n_objs}"
-        
-        super().__init__(verbose=verbose)
-        self.data = data.copy()
-        self.log(f'HaloSample: {n_objs=}, {keys=}')
-        
-    def __getitem__(self, key: str | tuple[str, ...]):
-        '''
-        Get the attribute of the halo sample.
-        
-        @key: key of the attribute.
-        '''
-        return self.data[key]
-    
+    Default columns (the ELUCID catalogue of the paper, see
+    ``docs/data_format.md``): ``position`` (N, 3) [h^-1 Mpc], ``mass``
+    = log10(M_200m / h^-1 Msun), ``R200m``, ``V200``, ``Vmax``,
+    ``concentration``, ``lambda``, ``zf``, ``is_backsplash``.
+    Any other columns are kept.
+    """
+
+    id_key = "halo_id"
+    radius_key = "R200m"
+    zf_key = "zf"
+    backsplash_key = "is_backsplash"
+
     @property
-    def n_objs(self):
-        key = next(iter(self.keys()))    
-        val = self[key]
-        return len(val)
-    
-    def keys(self):
-        return self.data.keys()
-    
-    def values(self):
-        return self.data.values()
-    
-    def items(self):
-        return self.data.items()
-    
-    def __contains__(self, key: str):
-        return key in self.data
-    
-    def subset(self, args: np.ndarray | slice, copy=True) -> Self:
-        '''
-        Row-wise subsetting by `args`, applied to each value. Return a new 
-        (copied) sample.
-        
-        @copy: if False, values are not guaranteed to be copied.
-        '''
-        return HaloSample({
-            k: v[args] for k, v in self.data.items()    
-        }, copy=copy, verbose=self.verbose)
-        
-    def subset_by_val(self, key: str, lo=None, hi=None, eq=None) -> Self:
-        sel = np.ones(self.n_objs, dtype=bool)
-        val = self[key]
-        if lo is not None:
-            sel &= val >= lo
-        if hi is not None:
-            sel &= val < hi
-        if eq is not None:
-            sel &= val == eq
-        return self.subset(sel, copy=False)
-    
-    def subset_by_p(self, key: str, p_lo=None, p_hi=None) -> Self:
-        val = self[key]
-        lo, hi = None, None
-        if p_lo is not None:
-            lo = np.quantile(val, p_lo)
-        if p_hi is not None:
-            hi = np.quantile(val, p_hi)
-        return self.subset_by_val(key, lo=lo, hi=hi)    
-    
-    def add_property(self, func: function):
-        add = func(self)
-        for k, v in add.items():
-            assert len(v) == self.n_objs, f"Size of {k} != {self.n_objs}"
-            self.data[k] = v
+    def radii(self) -> np.ndarray:
+        return np.asarray(self.data[self.radius_key], dtype=np.float64)
 
-    def to_file(self, path: Path | str, *, compression: str | None = None):
-        """
-        Save the sample to an HDF5 file so it can be reloaded with
-        ``HaloSample.from_file(path)``.
+    @property
+    def formation_redshift(self) -> np.ndarray:
+        return np.asarray(self.data[self.zf_key], dtype=np.float64)
 
-        - path: target file path (directories will be created if needed).
-        - compression: optional h5py compression name (e.g. 'gzip', 'lzf').
-        """
-        path = Path(path)
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
+    def select_paper(self, *, zf_range=(0.01, 20.0),
+                     exclude_backsplash: bool = True) -> "HaloSample":
+        """Cuts of the paper: ``zf_lo <= z_f < zf_hi`` and, optionally,
+        ``is_backsplash == 0`` (strict flag; unmatched halos, flag -1, are
+        removed as well)."""
+        out = self
+        if zf_range is not None:
+            out = out.subset_by_val(self.zf_key, lo=zf_range[0], hi=zf_range[1])
+        if exclude_backsplash and self.backsplash_key in self:
+            out = out.subset_by_val(self.backsplash_key, eq=False)
+        return out
 
-        # Write datasets. Handle numeric arrays and string/object arrays.
-        with h5py.File(path, 'w', locking=False) as f:
-            for k, v in self.data.items():
-                arr = np.asarray(v)
-                # handle string-like or object arrays specially
-                if arr.dtype.kind in ('U', 'S') or arr.dtype == object:
-                    dt = h5py.string_dtype(encoding='utf-8')
-                    # ensure a numpy array of Python strings
-                    str_arr = arr.astype('U').astype(object)
-                    f.create_dataset(k, data=str_arr, dtype=dt)
-                else:
-                    if compression:
-                        f.create_dataset(k, data=arr, compression=compression)
-                    else:
-                        f.create_dataset(k, data=arr)
-    
-    @classmethod
-    def from_file(cls, path: Path | str, **init_kw):
-        '''
-        Create the sample from a file. The file should be in HDF5 format,
-        with datasets containing the halo attributes.
-        
-        @path: path to the file.
-        @init_kw: additional keyword arguments passed to __init__().
-        '''
-        with h5py.File(path, 'r', locking=False) as f:
-            data = {k: f[k][:] for k in f.keys()}
-        return cls(data, copy=False, **init_kw)
+    def mass_bins(self, edges):
+        """List of sub-samples with ``lo <= log M < hi``."""
+        edges = np.asarray(edges, dtype=np.float64)
+        return [self.subset_by_val(self.mass_key, lo=lo, hi=hi)
+                for lo, hi in zip(edges[:-1], edges[1:])]
+
+    def count_mass_bins(self, edges) -> np.ndarray:
+        m = self.log_masses
+        edges = np.asarray(edges, dtype=np.float64)
+        return np.array([int(((m >= lo) & (m < hi)).sum())
+                         for lo, hi in zip(edges[:-1], edges[1:])])

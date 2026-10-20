@@ -1,72 +1,24 @@
-"""Readers for the combined 3D/1D WCCF HDF5 files written by ``pywccf.pipeline``.
+"""Readers of the *combined* result files of the paper runs.
 
-(First part of the former ``func2.py``; the amplitude-ratio part lives in
-``pywccf.ratio``.)
-
-Original ``func2`` notes on the assembly-bias summaries:
-
-The scalar amplitude is a projection, not an average of pointwise ratios.
-For sample ``s`` and total-sample template ``t`` over a declared radial range,
-the default estimator is
-
-    B_s = sum_k dr_k t_k xi_s,k / sum_k dr_k t_k^2.
-
-Thus each linear separation interval has equal measure, isolated zeros of the
-template cause no divergence, and scale-dependent shape differences are
-retained in a reported residual statistic. When covariance matrices are
-available, ``fit_scale_averaged_B(..., averaging="gls")`` uses the generalized
-least-squares analogue. Current production HDF5 files save only marginal
-standard deviations, so the high-level analysis uses the linear-radius
-projection and labels all propagated errors as diagonal approximations.
+These files (``docs/data/**/*_combined.h5``) were written by the former
+measurement pipeline (``code/run.py``); their layout is described in
+``docs/combined_h5_format.md``.  New measurements are written with
+:mod:`pywccf.io.results` instead.
 """
-
 from __future__ import annotations
 
-import re
+
 from pathlib import Path
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
-import yaml
-from matplotlib.lines import Line2D
+
 
 
 COMBINED_FORMAT_NAME = "halo_web_combined_results"
 COMBINED_SCHEMA_VERSION = "1.0"
 WEB_TYPES = ("knot", "filament", "sheet", "void")
 DIRECTIONS = ("e1", "e2", "e3")
-DIRECTION_COLORS = {
-    "e1": '#f33b1f',
-    "e2": '#00ac38',
-    "e3": '#5e76ff',
-}
-
-PROPERTY_SPECS = {
-    "age": {
-        "display": "Formation redshift",
-        "low_display": "young",
-        "high_display": "old",
-    },
-    "concentration": {
-        "display": "Concentration",
-        "low_display": "low concentration",
-        "high_display": "high concentration",
-    },
-    "spin": {
-        "display": "Spin",
-        "low_display": "low spin",
-        "high_display": "high spin",
-    },
-}
-
-
-class WeakTemplateError(ValueError):
-    """Raised when a WCCF template is too weak for a stable relative fit."""
-
-    def __init__(self, message, *, template_rms):
-        super().__init__(message)
-        self.template_rms = float(template_rms)
 
 
 def load_xi_3d_h5(file_path):

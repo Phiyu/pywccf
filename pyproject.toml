@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pywccf"
-version = "0.1.0"
-description = "Three-dimensional cosmic-web cross-correlation function (3D-WCCF) in the local tidal eigenframe"
+version = "1.0.0"
+description = "Cosmic-web cross-correlation functions"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
   { name = "Hongfei Yu", email = "yuhongfei@mail.ustc.edu.cn" },
@@ -26,22 +26,12 @@ dependencies = [
   "numpy>=1.24",
   "scipy>=1.10",
   "h5py>=3.8",
-  "matplotlib>=3.7",
-  "pyyaml>=6.0",
-  "scikit-learn>=1.2",
-  "pyhipp @ git+https://github.com/ChenYangyao/pyhipp.git",
-  "tqdm",
 ]
 
 [project.optional-dependencies]
 fast = ["numba>=0.57"]
-catalog = ["numba>=0.57", "pandas"]
-notebook = ["jupyter", "ipykernel"]
-test = ["pytest"]
-
-[project.scripts]
-pywccf-run = "pywccf.pipeline.runner:main"
-pywccf-combine = "pywccf.pipeline.combine:main"
+notebook = ["matplotlib>=3.7", "jupyter"]
+test = ["pytest", "numba>=0.57"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

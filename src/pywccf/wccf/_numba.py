@@ -1,16 +1,13 @@
-# halo_web_numba.py
-"""Numba kernel for ``halo_web_fast.HaloWeb3DCross`` (backend='numba').
+"""Compiled pair-counting kernel of the 3D-WCCF (optional, needs numba).
 
-One compiled pass per web type: for every web-cell centre, loop over the
-halo cells that cover the centre's rotated search box (the cube
-|r_i| <= e_i[-1] in its own tidal frame), project each halo on the centre's
-eigenvectors, bin it, and add  w_centre * w_halo  to the accumulator of the
-centre's jackknife region for every halo weighting the halo belongs to.
-No pair is stored; centres are processed in parallel (one task = a block of
-centres of a single region, so tasks never write to the same row).
-
-The search, the projection (dx @ triad), the periodic wrap and the binning
-follow halo_web.HaloWeb3DCross pair for pair.
+One parallel pass per web type: for every centre, loop over the tracer
+cells covering the centre's rotated search box ``|r_i| <= e_i[-1]`` (in its
+own eigenframe), project each tracer on the centre's eigenvectors, bin it,
+and add ``w_centre * w_tracer`` to the accumulator of the centre's region
+for every tracer weighting the tracer belongs to.  No pair is stored; tasks
+are blocks of centres of a single region, so tasks never share an output
+row.  Same geometry and binning as the NumPy path in :mod:`._pairs`
+(ported from the reference implementation used for the paper).
 """
 from __future__ import annotations
 
@@ -33,7 +30,7 @@ def _bin_right(edges, r, n):
 
 @nb.njit(parallel=True, cache=True)
 def region_sums(task_lo, task_hi, order, cx, cev, cw,
-                hx, cell_ptr, n_side, cell_size, box, periodic,
+                hx, cell_ptr, n_side, cell_size, box, periodic, excl,
                 e1, e2, e3, h_ptr, h_v, h_w, n_v, out):
     """out[t, v, bin] += sum over the pairs of task t of w_c * w_h(v)."""
     n1 = e1.shape[0] - 1
@@ -114,7 +111,7 @@ def region_sums(task_lo, task_hi, order, cx, cev, cw,
                             r3 = abs(d0 * E[0, 2] + d1 * E[1, 2] + d2 * E[2, 2])
                             if r3 > a3:
                                 continue
-                            if d0 * d0 + d1 * d1 + d2 * d2 <= 1e-24:
+                            if excl and d0 * d0 + d1 * d1 + d2 * d2 <= 1e-24:
                                 continue
                             bf = (_bin_right(e1, r1, n1) * s23
                                   + _bin_right(e2, r2, n2) * s3

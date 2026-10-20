@@ -1,27 +1,29 @@
-"""pywccf -- the three-dimensional cosmic-web cross-correlation function.
+"""pywccf -- cosmic-web cross-correlation functions in the tidal eigenframe.
 
-Companion code of Yu & Wang, "Anisotropic Cosmic Web Cross-Correlation in
-Tidal Eigenspace I: Cosmic Web-Halo Correlation and Assembly Bias".
+Companion code of Yu, Wang et al., "Halo formation and distribution around
+cosmic web" (in prep.).
 
-Sub-packages
-------------
-samples      halo catalogue and tidal-field containers (from CosmicCoreBox)
-estimator    3D-WCCF estimators (reference / fast / numba engines)
-pipeline     YAML-driven runner that writes one combined HDF5 file
-io           readers for the combined HDF5 files
-ratio        scale-averaged amplitudes and the amplitude ratio (AR)
-geometry     directional walk: frame coherence and web-type transitions
-environment  halo mass function / formation time vs density and web type
-plotting     the figures of the paper
+>>> from pywccf import TidalField, HaloSample, WCCF3D
+>>> tf = TidalField.from_file('field_099.2.hdf5')
+>>> halos = HaloSample.from_file('halo_0701.hdf5', l_box=tf.l_box)
+>>> res = WCCF3D(tf, halos).compute('filament', error='jackknife')
+>>> r, xi, sd = res['all'].profile(3)          # xi_3D along e_3
 
-Heavy modules (matplotlib, numba) are only imported when the corresponding
-sub-package is imported.
+Sub-packages: ``core`` (Log, Mesh, assignment, bins, resampling),
+``samples`` (tracers and fields), ``wccf`` (estimators), ``io``, ``utils``.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from . import samples
-from .samples import FieldSample, HaloSample, TidalField
+from . import core, samples, wccf, io, utils
+from .core import Mesh, RadialBins, FrameBins, PAPER_EDGES
+from .samples import (Tracer, HaloSample, SubhaloSample, GalaxySample, Field,
+                      MatterField, TidalField, GasField, WEB_TYPES)
+from .wccf import WCCF1D, WCCF3D, WCCFResult
+from .io import save_results, load_results
 
-__all__ = ["samples", "TidalField", "FieldSample", "HaloSample",
-           "__version__"]
+__all__ = ["core", "samples", "wccf", "io", "utils", "Mesh", "RadialBins",
+           "FrameBins", "PAPER_EDGES", "Tracer", "HaloSample",
+           "SubhaloSample", "GalaxySample", "Field", "MatterField",
+           "TidalField", "GasField", "WEB_TYPES", "WCCF1D", "WCCF3D",
+           "WCCFResult", "save_results", "load_results", "__version__"]

@@ -2,13 +2,7 @@
 numpy>=1.24
 scipy>=1.10
 h5py>=3.8
-matplotlib>=3.7
-pyyaml>=6.0
-scikit-learn>=1.2
-pyhipp @ git+https://github.com/ChenYangyao/pyhipp.git   # PyPI "pyhipp" is outdated; needs Python >= 3.11
-tqdm
-# fast 3D engine (pywccf.estimator.halo_web_numba)
+# optional: compiled 3D pair counting (pywccf.wccf._numba)
 numba>=0.57
-# notebooks / tests
-jupyter
+# tests
 pytest

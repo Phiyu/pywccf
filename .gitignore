@@ -11,3 +11,5 @@ tests/
 configs/
 docs/
 notebook/
+_to_delete/
+examples/output/

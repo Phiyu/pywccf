@@ -1,15 +1,23 @@
-"""Data containers, copied from ``pyccb.samples`` (CosmicCoreBox).
+"""Samples: discrete tracers and gridded fields.
 
-``field.py`` and ``halo.py`` are kept identical to the CosmicCoreBox versions
-so that results are reproducible; ``catalog.py`` holds the ELUCID-specific
-catalogue construction used in Section 2 of the paper.
+Tracers (``Tracer`` base)            Fields (``Field`` base)
+-------------------------            -----------------------
+HaloSample                            MatterField   (delta)
+SubhaloSample   (host: f_in_grp)      TidalField    (lam, evec, delta; T-web)
+GalaxySample    (host: host_id)       GasField      (rho, temperature, ...)
+
+``Tracer.to_field(mesh, scheme='ngp'|'cic'|'tsc', weight='number'|'mass')``
+turns a tracer into a :class:`MatterField`; ``Field.to_tracer`` does the
+opposite (weighted nodes) for pair-count estimators.
 """
-from . import field, halo, catalog
-from .field import TidalField, FieldSample
+from .tracer import Tracer, HostedTracer
 from .halo import HaloSample
-from .catalog import (build_elucid_halo_catalog, join_tree_properties,
-                      load_halo_sample, count_mass_bins)
+from .subhalo import SubhaloSample
+from .galaxy import GalaxySample
+from .field import Field, MatterField, GasField, gaussian_smooth
+from .tidal import WEB_TYPES, WEB_N_LAM, TidalField, tidal_eigensystem
 
-__all__ = ["TidalField", "FieldSample", "HaloSample",
-           "build_elucid_halo_catalog", "join_tree_properties",
-           "load_halo_sample", "count_mass_bins"]
+__all__ = ["Tracer", "HostedTracer", "HaloSample", "SubhaloSample",
+           "GalaxySample", "Field", "MatterField", "GasField",
+           "gaussian_smooth", "WEB_TYPES", "WEB_N_LAM", "TidalField",
+           "tidal_eigensystem"]

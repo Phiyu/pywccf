@@ -1,220 +1,263 @@
+"""Gridded fields on a periodic :class:`~pywccf.core.Mesh`.
+
+* :class:`Field` -- base class: a dict of node arrays sharing one mesh,
+  optional boolean mask (e.g. a reconstruction volume), interpolation,
+  Gaussian smoothing, HDF5 io, conversion to a weighted node tracer.
+* :class:`MatterField` -- matter (or tracer) density, key ``delta``;
+  builds the :class:`~pywccf.samples.tidal.TidalField`.
+* :class:`GasField` -- gas quantities (``rho``, ``temperature``, ...).
+"""
 from __future__ import annotations
-import h5py
-from pyhipp.io import h5
-from pyhipp.core import abc
-from pyhipp.field.cubic_box import Mesh
-import numpy as np
+
 from pathlib import Path
-from sklearn.neighbors import KDTree
-from functools import cached_property
+from typing import Mapping
 
-class TidalField(abc.HasLog):
-    def __init__(self, lams: np.ndarray, delta: np.ndarray,
-                 mesh: Mesh, lam_off: float = 0.,
-                 recon_mask: np.ndarray = None, 
-                 verbose = True):
+import h5py
+import numpy as np
 
+from ..core.assignment import interpolate, window_k
+from ..core.log import HasLog
+from ..core.mesh import Mesh
+from ..io.hdf5 import dump_dict
+
+__all__ = ["Field", "MatterField", "GasField", "gaussian_smooth"]
+
+
+def gaussian_smooth(grid: np.ndarray, mesh: Mesh, R: float,
+                    deconvolve: str | None = None) -> np.ndarray:
+    """Gaussian smoothing ``W(k) = exp(-k^2 R^2 / 2)`` by FFT, optionally
+    deconvolving the assignment window of scheme ``deconvolve``."""
+    grid = mesh.check_shape(grid, "grid")
+    fk = np.fft.rfftn(grid)
+    if deconvolve:
+        fk /= window_k(mesh, deconvolve)
+    if R and R > 0:
+        fk *= np.exp(-0.5 * mesh.k2() * R * R)
+    return np.fft.irfftn(fk, s=mesh.shape, axes=(0, 1, 2))
+
+
+class Field(HasLog):
+    """Named node arrays on one mesh.
+
+    Parameters
+    ----------
+    data : mapping name -> array whose first three axes are ``mesh.shape``
+        (trailing axes allowed, e.g. eigenvalues), or a single array
+        (stored under ``default_key``).
+    mesh : the :class:`Mesh`.
+    mask : optional boolean node mask; statistics and conversions use only
+        masked-in nodes.
+    meta : free-form metadata.
+    """
+
+    default_key: str = "value"
+
+    def __init__(self, data, mesh: Mesh, *, mask: np.ndarray | None = None,
+                 meta: Mapping | None = None, verbose: bool = True):
         super().__init__(verbose=verbose)
-
-        self.log(f'TidalField: threshold={lam_off}')
-        if recon_mask is None:
-            self.log('All field volume are used.')
-            recon_mask = np.ones_like(delta, dtype=bool)
-
-        self.lams = lams
-        self.delta = delta
+        if not isinstance(mesh, Mesh):
+            raise TypeError("mesh must be a pywccf.core.Mesh")
+        if not isinstance(data, Mapping):
+            data = {self.default_key: data}
         self.mesh = mesh
-        self.lam_off = lam_off
-        self.recon_mask = recon_mask
-        self._xs_web_t_cache = {}
-        self.n_lams = (lams >= lam_off).sum(-1)
-
-    @classmethod
-    def from_file(cls, path: Path | str, recon_only=True, lam_off: float = 0, **init_kw):
-        with h5py.File(path, 'r', locking=False) as f:
-            lams, delta, n_grids, l_box = tuple(f[key][()] for key in [
-                'lam', 'delta_sm_x', 'n_grids', 'l_box'])
-            if recon_only:
-                recon_mask = f['reconstruction_mask'][()]
-                if recon_mask.shape != delta.shape:
-                    recon_mask = align_mask_to_grid(recon_mask, delta.shape)
-            else:
-                recon_mask = None
-            mesh = Mesh.new(n_grids, l_box)
-            lams = np.array(lams, dtype=np.float32)
-            if f.keys().__contains__('lambda_th'):
-                lam_off = f['lambda_th'][()]
-            else :
-                lam_off = 0.0
-        return cls(lams, delta, mesh, recon_mask=recon_mask, lam_off=lam_off, **init_kw)
-
-    @cached_property
-    def xs_grids(self):
-        mesh = self.mesh
-        n, h = mesh.n_grids, mesh.l_grid
-
-        idx_1d = np.arange(n)
-        x_1d = idx_1d * h
-        x, y, z = np.meshgrid(x_1d, x_1d, x_1d, indexing='ij')
-        X = np.stack([x, y, z], axis=-1)
-
-        return X
-
-    @cached_property
-    def xs_recon(self):
-        xs = self.xs_grids[self.recon_mask]
-        return xs.reshape(-1, 3)
-
-    @cached_property
-    def kdt_recon(self):
-        return KDTree(self.xs_recon)
-
-    @cached_property
-    def kdt_grids(self):
-        xs = self.xs_grids.reshape(-1, 3)
-        return KDTree(xs)
-
-    def xs_web_t(self, n_lam):
-        cache = self._xs_web_t_cache
-        if n_lam in cache:
-            return cache[n_lam]
-        mask = self._mask_web_t(n_lam)
-        xs = self.xs_grids[mask].reshape(-1, 3)
-        cache[n_lam] = xs
-        return xs
-
-    def wet_t_at(self, xs: np.ndarray):
-        xs = np.asarray(xs)
-        n_xs = len(xs)
-        assert xs.shape == (n_xs, 3)
-        xis = self.mesh._impl.x_to_xi_nd(xs)
-        xi0, xi1, xi2 = xis.T
-        return self.n_lams[xi0, xi1, xi2]
-
-    def _mask_web_t(self, n_lam):
-        mask = (self.lams >= self.lam_off).sum(-1) == n_lam
-        mask &= self.recon_mask
-        return mask
-    
-    def __getitem__(self, key: str | tuple[str, ...]):
-        '''
-        Get the attribute of the field sample.
-
-        @key: key of the attribute.
-        '''
-        return self.data[key]
-    
-def align_mask_to_grid(mask: np.ndarray, target_shape: tuple[int, int, int]) -> np.ndarray:
-    src_shape = np.array(mask.shape)
-    tgt_shape = np.array(target_shape)
-
-    i_tgt, j_tgt, k_tgt = np.meshgrid(
-        np.arange(tgt_shape[0]),
-        np.arange(tgt_shape[1]),
-        np.arange(tgt_shape[2]),
-        indexing='ij'
-    )
-    
-    scale = tgt_shape / src_shape
-    i_src = np.round(i_tgt / scale[0]).astype(int)
-    j_src = np.round(j_tgt / scale[1]).astype(int)
-    k_src = np.round(k_tgt / scale[2]).astype(int)
-    
-    valid = (
-        (i_src >= 0) & (i_src < src_shape[0]) &
-        (j_src >= 0) & (j_src < src_shape[1]) &
-        (k_src >= 0) & (k_src < src_shape[2])
-    )
-    
-    aligned_mask = np.zeros(target_shape, dtype=bool)
-    aligned_mask[valid] = mask[i_src[valid], j_src[valid], k_src[valid]]
-    
-    return aligned_mask
-
-class FieldSample(abc.HasLog, abc.HasDictRepr):
-    '''
-    A simple field sample.
-    
-    @l_box: size of the simulation box in Mpc/h.
-    @N_grids: number of grid points along each axis.
-    @data: arrays contain field data, e.g. {'temperature': ..., 'density': ...} .
-    @verbose: whether to print log messages.
-    @copy: whether to copy the data.
-    '''
-    def __init__(self, boxsize: float, N_grids: int, data: dict[str, np.ndarray], verbose=True, copy=True):
-
-        keys = tuple(data.keys())
+        self.data = {}
         for k, v in data.items():
-            assert v.shape == (N_grids, N_grids, N_grids), f"Size of {k} != ({N_grids}, {N_grids}, {N_grids})"
-        
-        super().__init__(verbose=verbose)
-        self.boxsize = float(boxsize)
-        self.N_grids = int(N_grids)
-        self.data = data.copy()
-        self.log(f'FieldSample: {boxsize=}, {N_grids=}, {keys=}')
-        
-    def __getitem__(self, key: str | tuple[str, ...]):
-        '''
-        Get the attribute of the field sample.
-        
-        @key: key of the attribute.
-        '''
-        return self.data[key]
-    
+            self[k] = v
+        self.mask = None if mask is None else np.asarray(
+            mesh.check_shape(mask, "mask"), dtype=bool)
+        self.meta = dict(meta or {})
+        self.log(f"{mesh}, keys={tuple(self.data)}"
+                 + ("" if self.mask is None else
+                    f", mask={self.mask.mean():.3f} of the volume"))
+
+    # -- container ---------------------------------------------------------
     def keys(self):
         return self.data.keys()
-    
-    def values(self):
-        return self.data.values()
-    
+
     def items(self):
         return self.data.items()
-    
-    def __contains__(self, key: str):
+
+    def __contains__(self, key) -> bool:
         return key in self.data
-    
 
-    def to_file(self, path: Path | str, *, compression: str | None = None):
+    def __getitem__(self, key: str) -> np.ndarray:
+        return self.data[key]
+
+    def __setitem__(self, key: str, value):
+        value = np.asarray(value)
+        if value.shape[:3] != self.mesh.shape:
+            raise ValueError(f"{key!r} has shape {value.shape}, expected "
+                             f"{self.mesh.shape} + (...)")
+        self.data[str(key)] = value
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.mesh}, keys={tuple(self.data)})"
+
+    @property
+    def n_grids(self) -> int:
+        return self.mesh.n_grids
+
+    @property
+    def l_box(self) -> float:
+        return self.mesh.l_box
+
+    def value(self, key: str | None = None) -> np.ndarray:
+        return self.data[key or self.default_key]
+
+    # -- statistics / operations ------------------------------------------
+    def mean(self, key: str | None = None) -> float:
+        v = self.value(key)
+        return float(v[self.mask].mean() if self.mask is not None else v.mean())
+
+    def overdensity(self, key: str | None = None) -> np.ndarray:
+        """``v / <v> - 1`` (mean over the mask)."""
+        v = self.value(key).astype(np.float64)
+        return v / self.mean(key) - 1.0
+
+    def values_at(self, xs, key: str | None = None, scheme: str = "ngp"):
+        """Field values at positions ``xs`` (NGP or CIC/TSC interpolation)."""
+        return interpolate(self.value(key), xs, self.mesh, scheme=scheme)
+
+    def smoothed(self, R: float, key: str | None = None,
+                 deconvolve: str | None = None) -> np.ndarray:
+        return gaussian_smooth(self.value(key).astype(np.float64), self.mesh,
+                               R, deconvolve)
+
+    def node_positions(self, sel: np.ndarray | None = None) -> np.ndarray:
+        if sel is None:
+            sel = self.mask
+        return self.mesh.node_positions(sel)
+
+    def to_tracer(self, key: str | None = None, *, weight: str = "1+value",
+                  stride: int = 1, mask: np.ndarray | None = None):
+        """Nodes as a weighted point set, for pair-count (PH) estimators.
+
+        weight : '1+value' (the field is an overdensity; weight = 1 + delta,
+            clipped at 0), 'value' (the field is already a density) or None.
+        stride : keep every ``stride``-th node along each axis (coarser,
+            cheaper sampling; weights are not rescaled because only their
+            ratio to the mean enters the estimators).
         """
-        Save the sample to an HDF5 file so it can be reloaded with
-        ``FieldSample.from_file(path)``.
+        from .tracer import Tracer
+        sel = np.zeros(self.mesh.shape, dtype=bool)
+        s = max(1, int(stride))
+        sel[::s, ::s, ::s] = True
+        if mask is not None:
+            sel &= np.asarray(mask, dtype=bool)
+        if self.mask is not None:
+            sel &= self.mask
+        v = self.value(key)[sel].astype(np.float64)
+        if weight == "1+value":
+            w = (1.0 + v).clip(0.0)
+        elif weight == "value":
+            w = v
+        elif weight is None:
+            w = np.ones_like(v)
+        else:
+            raise ValueError("weight must be '1+value', 'value' or None")
+        return Tracer({"position": self.mesh.node_positions(sel), "weight": w},
+                      l_box=self.l_box, verbose=self.verbose,
+                      meta={"source": type(self).__name__, "stride": s})
 
-        - path: target file path (directories will be created if needed).
-        - compression: optional h5py compression name (e.g. 'gzip', 'lzf').
-        """
-        path = Path(path)
-        if not path.parent.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
+    # -- io ----------------------------------------------------------------
+    @staticmethod
+    def _read_mesh(g: h5py.Group) -> Mesh:
+        n = int(np.asarray(g["n_grids"][()]).item())
+        l = float(np.asarray(g["l_box"][()]).item())
+        return Mesh(n, l)
 
-        # Write datasets. Handle numeric arrays and string/object arrays.
-        with h5py.File(path, 'w', locking=False) as f:
-            f.create_dataset('l_box', data=self.l_box)
-            f.create_dataset('N_grids', data=self.N_grids)
-            for k, v in self.data.items():
-                arr = np.asarray(v)
-                # handle string-like or object arrays specially
-                if arr.dtype.kind in ('U', 'S') or arr.dtype == object:
-                    dt = h5py.string_dtype(encoding='utf-8')
-                    # ensure a numpy array of Python strings
-                    str_arr = arr.astype('U').astype(object)
-                    f.create_dataset(k, data=str_arr, dtype=dt)
-                else:
-                    if compression:
-                        f.create_dataset(k, data=arr, compression=compression)
-                    else:
-                        f.create_dataset(k, data=arr)
-    
     @classmethod
-    def from_file(cls, path: Path | str, **init_kw):
-        '''
-        Create the sample from a file. The file should be in HDF5 format,
-        with datasets containing the field attributes.
-        
-        @path: path to the file.
-        @init_kw: additional keyword arguments passed to __init__().
-        '''
-        with h5py.File(path, 'r', locking=False) as f:
-            boxsize = f['l_box'][()]
-            N_grids = f['n_grids'][()]
-            data = {k: f[k][:] for k in f.keys() if k not in ('l_box', 'n_grids')}
-        return cls(boxsize=boxsize, N_grids=N_grids, data=data, copy=False, **init_kw)
+    def from_file(cls, path, keys=None, *, group: str | None = None,
+                  key_map: Mapping[str, str] | None = None,
+                  mask_key: str | None = None, **init_kw):
+        """Read node arrays from an HDF5 file with scalar datasets
+        ``n_grids`` and ``l_box``.
+
+        keys : datasets to read (default: every dataset with the mesh
+            shape); ``key_map`` renames file datasets to field keys.
+        mask_key : dataset holding a boolean mask.
+        """
+        key_map = dict(key_map or {})
+        with h5py.File(path, "r", locking=False) as f:
+            g = f if group is None else f[group]
+            mesh = cls._read_mesh(g)
+            names = keys if keys is not None else [
+                k for k in g.keys() if isinstance(g[k], h5py.Dataset)
+                and g[k].shape[:3] == mesh.shape and k != mask_key]
+            data = {key_map.get(k, k): g[k][()] for k in names}
+            mask = None if mask_key is None else g[mask_key][()].astype(bool)
+            meta = {k: (v.decode() if isinstance(v, bytes) else v)
+                    for k, v in g.attrs.items()}
+        meta["path"] = str(path)
+        return cls(data, mesh, mask=mask, meta=meta, **init_kw)
+
+    def to_file(self, path, keys=None, *, group: str | None = None,
+                mode: str = "w", compression: str | None = None,
+                key_map: Mapping[str, str] | None = None):
+        key_map = dict(key_map or {})
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(path, mode) as f:
+            g = f if group is None else f.require_group(group)
+            out = {"n_grids": self.n_grids, "l_box": self.l_box}
+            out.update({key_map.get(k, k): self.data[k]
+                        for k in (keys or self.data)})
+            if self.mask is not None:
+                out["mask"] = self.mask
+            dump_dict(g, out, compression=compression, overwrite=True)
+            g.attrs["class"] = type(self).__name__
+        return path
+
+
+class MatterField(Field):
+    """Matter density contrast ``delta`` (and optionally ``rho``)."""
+
+    default_key = "delta"
+
+    @classmethod
+    def from_tracer(cls, tracer, mesh: Mesh | None = None, *,
+                    n_grids: int | None = None, scheme: str = "cic",
+                    weight="mass", **kw) -> "MatterField":
+        """Density of a :class:`~pywccf.samples.tracer.Tracer` (e.g. dark
+        matter particles: ``weight='number'`` for equal-mass particles,
+        ``'mass'`` otherwise)."""
+        return tracer.to_field(mesh, n_grids=n_grids, scheme=scheme,
+                               weight=weight, field_cls=cls, **kw)
+
+    @property
+    def delta(self) -> np.ndarray:
+        return self.data["delta"]
+
+    @property
+    def rho_over_mean(self) -> np.ndarray:
+        """``1 + delta``."""
+        return 1.0 + self.data["delta"]
+
+    def tidal_field(self, R_s: float, *, lam_th: float = 0.0,
+                    deconvolve: str | None = None, with_evecs: bool = True,
+                    **kw):
+        """Tidal field of the Gaussian-smoothed density (see
+        :meth:`TidalField.from_density`)."""
+        from .tidal import TidalField
+        return TidalField.from_density(
+            self.delta, self.mesh, R_s, lam_th=lam_th, deconvolve=deconvolve,
+            with_evecs=with_evecs, mask=self.mask, verbose=self.verbose, **kw)
+
+
+class GasField(Field):
+    """Gas quantities on the mesh, e.g. ``rho`` (gas density),
+    ``temperature``, ``pressure``, ``metallicity``."""
+
+    default_key = "rho"
+
+    @property
+    def delta(self) -> np.ndarray:
+        """Gas overdensity ``rho / <rho> - 1``."""
+        return self.overdensity("rho")
+
+    def mass_weighted_mean(self, key: str) -> float:
+        rho = self.data["rho"].astype(np.float64)
+        v = self.data[key].astype(np.float64)
+        if self.mask is not None:
+            rho, v = rho[self.mask], v[self.mask]
+        return float((rho * v).sum() / rho.sum())
