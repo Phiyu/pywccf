@@ -54,10 +54,10 @@ src/pywccf/
 ├── core/        Log/HasLog, Mesh, NGP/CIC/TSC assignment + interpolation,
 │                RadialBins / FrameBins, jackknife & bootstrap
 ├── samples/
-│   ├── tracer.py    Tracer, HostedTracer  (column table, selections, to_field)
+│   ├── tracer.py    Tracer  (column table, selections, hosts, to_field)
 │   ├── halo.py      HaloSample
-│   ├── subhalo.py   SubhaloSample   (host: f_in_grp; central iff f_in_grp == subhalo_id)
-│   ├── galaxy.py    GalaxySample    (host: host_id; central flag is_c)
+│   ├── subhalo.py   SubhaloSample   (+ central, host_id)
+│   ├── galaxy.py    GalaxySample    (+ central, host_id)
 │   ├── field.py     Field, MatterField, GasField  (smoothing, interpolation, to_tracer)
 │   └── tidal.py     TidalField  (tidal tensor from a density, T-web, eigenframes)
 ├── wccf/
@@ -72,11 +72,23 @@ src/pywccf/
 
 ### Samples
 
+All tracers share one set of keys; converting a simulation / survey output
+into them (a dict of arrays) is left to the user.
+
+| key | type | meaning |
+|---|---|---|
+| `position` | (N, 3) float | comoving position [h⁻¹ Mpc] (all tracers) |
+| `mass` | (N,) float | log10(M / h⁻¹ M☉): M_h (halos), m_sub (subhalos), M_* (galaxies) |
+| `id` | (N,) int | object id (optional; matched by `host_id`) |
+| `central` | (N,) bool | central of its host (subhalos, galaxies) |
+| `host_id` | (N,) int | `id` of the host halo (subhalos, galaxies) |
+
+
 | class | kind | notes |
 |---|---|---|
 | `Tracer` | discrete | `positions`, `masses`, `weights('number'│'mass'│key)`, `subset*`, `quantile_masks`, `to_field(mesh, scheme='ngp'│'cic'│'tsc', weight=...)` |
 | `HaloSample` | `Tracer` | `select_paper()`, `mass_bins()` |
-| `SubhaloSample`, `GalaxySample` | `HostedTracer` | `host_ids`, `is_central`, `centrals()`, `satellites()`, `host_index(hosts)`, `attach_host(hosts, keys)` |
+| `SubhaloSample`, `GalaxySample` | `Tracer` | require `central`, `host_id`; `centrals()`, `satellites()`, `n_per_host()`, `host_index(halos)`, `attach_host(halos, keys)` |
 | `Field` | gridded | dict of node arrays on a `Mesh`, mask, `values_at`, `smoothed`, `to_tracer` |
 | `MatterField` | `Field` | `delta`; `from_tracer`; `tidal_field(R_s, lam_th)` |
 | `TidalField` | `Field` | `lam` (descending), `evec`, `delta`; `web_mask`, `volume_fractions`, `with_threshold`, `from_density`, `from_file` / `to_file` (ELUCID layout) |

@@ -1,13 +1,22 @@
 """Discrete tracers (halos, subhalos, galaxies).
 
-A :class:`Tracer` is a column table (``dict`` of equal-length arrays) with a
-few conventions:
+A :class:`Tracer` is a column table (``dict`` of equal-length arrays) with
+one set of key conventions shared by every tracer class:
 
-* positions in ``data['position']`` (N, 3) or in ``x``, ``y``, ``z``
-  [h^-1 Mpc, comoving];
-* masses in ``data['mass']``, by default as ``log10(M / h^-1 Msun)``;
-* an optional object id (``id_key``) and, for :class:`HostedTracer`, the id
-  of the host (``host_key``).
+=============  ==========  ==================================================
+key            type        meaning
+=============  ==========  ==================================================
+``position``   (N, 3) f8   comoving position [h^-1 Mpc]           (required)
+``mass``       (N,) f8     log10(M / h^-1 Msun): M_h for halos, m_sub for
+                           subhalos, M_* for galaxies    (required, except
+                           for the base class)
+``id``         (N,) int    object id                             (optional)
+``central``    (N,) bool   central object of its host     (subhalo / galaxy)
+``host_id``    (N,) int    ``id`` of the host halo         (subhalo / galaxy)
+=============  ==========  ==================================================
+
+Any other column is kept as is.  Converting a simulation or survey output
+to these keys is left to the user (one dict of arrays).
 
 Selections (``subset*``) return new objects of the same class; masks over
 the parent (``quantile_masks``) are what the WCCF estimators take to measure
@@ -28,7 +37,7 @@ from ..core.log import HasLog
 from ..core.mesh import Mesh
 from ..io.hdf5 import dump_dict
 
-__all__ = ["Tracer", "HostedTracer"]
+__all__ = ["Tracer"]
 
 
 class Tracer(HasLog):
@@ -36,41 +45,36 @@ class Tracer(HasLog):
 
     Parameters
     ----------
-    data : mapping of column name -> array (first axis = object).
+    data : mapping of column name -> array (first axis = object); must
+        contain :attr:`required_keys`.
     l_box : box size [h^-1 Mpc]; needed by :meth:`to_field` without a mesh.
     meta : free-form metadata (simulation, snapshot, cuts ...).
     copy : copy the arrays.
-    position_key, mass_key, log_mass, id_key : override the class defaults.
     """
 
-    position_key: str = "position"
-    mass_key: str = "mass"
-    log_mass: bool = True
-    id_key: str | None = None
+    required_keys: tuple[str, ...] = ("position",)
 
-    def __init__(self, data: Mapping[str, np.ndarray], *, l_box: float | None = None,
-                 meta: Mapping | None = None, copy: bool = False,
-                 verbose: bool = True, position_key: str | None = None,
-                 mass_key: str | None = None, log_mass: bool | None = None,
-                 id_key: str | None = None):
+    def __init__(self, data: Mapping[str, np.ndarray], *,
+                 l_box: float | None = None, meta: Mapping | None = None,
+                 copy: bool = False, verbose: bool = True):
         super().__init__(verbose=verbose)
-        if position_key is not None:
-            self.position_key = position_key
-        if mass_key is not None:
-            self.mass_key = mass_key
-        if log_mass is not None:
-            self.log_mass = bool(log_mass)
-        if id_key is not None:
-            self.id_key = id_key
         cols = {str(k): (np.array(v) if copy else np.asarray(v))
                 for k, v in dict(data).items()}
-        if not cols:
-            raise ValueError("empty data")
+        missing = [k for k in self.required_keys if k not in cols]
+        if missing:
+            raise KeyError(f"{type(self).__name__} needs keys {missing}")
         lens = {k: len(v) for k, v in cols.items()}
         n = next(iter(lens.values()))
         bad = {k: m for k, m in lens.items() if m != n}
         if bad:
             raise ValueError(f"columns differ in length ({n}): {bad}")
+        pos = cols["position"]
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError(f"'position' must be (N, 3), got {pos.shape}")
+        if "central" in cols:
+            cols["central"] = cols["central"].astype(bool)
+        if "host_id" in cols and cols["host_id"].dtype.kind not in "iu":
+            raise TypeError("'host_id' must be an integer array")
         self.data = cols
         self.l_box = None if l_box is None else float(l_box)
         self.meta = dict(meta or {})
@@ -79,7 +83,7 @@ class Tracer(HasLog):
     # -- table interface ---------------------------------------------------
     @property
     def n_objs(self) -> int:
-        return len(next(iter(self.data.values())))
+        return len(self.data["position"])
 
     def __len__(self) -> int:
         return self.n_objs
@@ -117,36 +121,32 @@ class Tracer(HasLog):
         for k, v in add.items():
             self[k] = v
 
+    def _need(self, key: str) -> np.ndarray:
+        if key not in self.data:
+            raise KeyError(f"{type(self).__name__} has no {key!r} column")
+        return np.asarray(self.data[key])
+
     # -- common properties -------------------------------------------------
     @property
     def positions(self) -> np.ndarray:
         """(N, 3) float64 positions."""
-        if self.position_key in self.data:
-            xs = np.asarray(self.data[self.position_key], dtype=np.float64)
-            if xs.ndim != 2 or xs.shape[1] != 3:
-                raise ValueError(f"{self.position_key!r} must be (N, 3)")
-            return xs
-        if all(k in self.data for k in ("x", "y", "z")):
-            return np.column_stack([self.data[k] for k in ("x", "y", "z")]
-                                   ).astype(np.float64)
-        raise KeyError(f"no positions: need {self.position_key!r} or x, y, z")
+        return np.asarray(self.data["position"], dtype=np.float64)
+
+    @property
+    def log_masses(self) -> np.ndarray:
+        """``mass`` column, log10(M / h^-1 Msun)."""
+        return self._need("mass").astype(np.float64)
 
     @property
     def masses(self) -> np.ndarray:
         """Linear masses [h^-1 Msun]."""
-        m = np.asarray(self.data[self.mass_key], dtype=np.float64)
-        return 10.0 ** m if self.log_mass else m
-
-    @property
-    def log_masses(self) -> np.ndarray:
-        m = np.asarray(self.data[self.mass_key], dtype=np.float64)
-        return m if self.log_mass else np.log10(m)
+        return 10.0 ** self.log_masses
 
     @property
     def ids(self) -> np.ndarray:
-        if self.id_key is None or self.id_key not in self.data:
-            return np.arange(self.n_objs)
-        return np.asarray(self.data[self.id_key])
+        """``id`` column (row numbers when absent)."""
+        return (np.asarray(self.data["id"]) if "id" in self.data
+                else np.arange(self.n_objs))
 
     def number_density(self) -> float:
         if self.l_box is None:
@@ -169,6 +169,48 @@ class Tracer(HasLog):
         if w.shape != (self.n_objs,):
             raise ValueError(f"weights must have shape ({self.n_objs},)")
         return w
+
+    # -- hosts (samples with 'central' and 'host_id') -----------------------
+    @property
+    def is_central(self) -> np.ndarray:
+        return self._need("central").astype(bool)
+
+    @property
+    def host_ids(self) -> np.ndarray:
+        return self._need("host_id")
+
+    def centrals(self) -> "Tracer":
+        return self.subset(self.is_central)
+
+    def satellites(self) -> "Tracer":
+        return self.subset(~self.is_central)
+
+    def n_per_host(self) -> tuple[np.ndarray, np.ndarray]:
+        """Unique host ids and the number of members of each."""
+        return np.unique(self.host_ids, return_counts=True)
+
+    def host_index(self, hosts: "Tracer") -> np.ndarray:
+        """Row of every object's host in ``hosts`` (matched on
+        ``self['host_id'] == hosts['id']``; ``-1`` if absent)."""
+        hid = hosts._need("id")
+        order = np.argsort(hid, kind="stable")
+        sorted_ids = hid[order]
+        pos = np.searchsorted(sorted_ids, self.host_ids)
+        pos_c = np.clip(pos, 0, len(sorted_ids) - 1)
+        found = (pos < len(sorted_ids)) & (sorted_ids[pos_c] == self.host_ids)
+        return np.where(found, order[pos_c], -1)
+
+    def attach_host(self, hosts: "Tracer", keys, *, prefix: str = "host_",
+                    fill=np.nan) -> None:
+        """Copy host columns ``keys`` to every member as ``prefix + key``."""
+        idx = self.host_index(hosts)
+        ok = idx >= 0
+        for k in ([keys] if isinstance(keys, str) else keys):
+            src = np.asarray(hosts[k])
+            out = np.full((self.n_objs,) + src.shape[1:], fill,
+                          dtype=np.result_type(src.dtype, np.asarray(fill).dtype))
+            out[ok] = src[idx[ok]]
+            self[prefix + k] = out
 
     # -- selections --------------------------------------------------------
     def _new(self, data: dict) -> "Tracer":
@@ -209,6 +251,18 @@ class Tracer(HasLog):
         if eq is not None:
             sel &= val == eq
         return sel
+
+    def mass_bins(self, edges) -> list["Tracer"]:
+        """Sub-samples with ``lo <= mass < hi``."""
+        edges = np.asarray(edges, dtype=np.float64)
+        return [self.subset_by_val("mass", lo=lo, hi=hi)
+                for lo, hi in zip(edges[:-1], edges[1:])]
+
+    def count_mass_bins(self, edges) -> np.ndarray:
+        m = self.log_masses
+        edges = np.asarray(edges, dtype=np.float64)
+        return np.array([int(((m >= lo) & (m < hi)).sum())
+                         for lo, hi in zip(edges[:-1], edges[1:])])
 
     def quantile_masks(self, key: str, p: float = 0.2, *,
                        bin_key: str | None = None, bin_edges=None):
@@ -277,7 +331,8 @@ class Tracer(HasLog):
     def from_file(cls, path, *, keys=None, group: str | None = None,
                   l_box: float | None = None, **init_kw):
         """Read every (or the selected) top-level dataset of an HDF5 file or
-        group as a column; ``l_box`` falls back to the file attribute."""
+        group as a column; ``l_box`` falls back to the file attribute.  The
+        file must already use the key conventions of this module."""
         with h5py.File(path, "r", locking=False) as f:
             g = f if group is None else f[group]
             names = [k for k in (g.keys() if keys is None else keys)
@@ -301,73 +356,3 @@ class Tracer(HasLog):
                 g.attrs["l_box"] = self.l_box
             g.attrs["class"] = type(self).__name__
         return path
-
-
-class HostedTracer(Tracer):
-    """A tracer that lives in a host (subhalos in FoF groups, galaxies in
-    halos / groups).
-
-    ``host_key`` holds the id of the host; ``central_key`` an optional
-    boolean central flag.  When the flag is missing, an object is central
-    iff its own id equals its host id (the ELUCID / SUBFIND convention
-    ``f_in_grp == subhalo_id``).
-    """
-
-    host_key: str = "host_id"
-    central_key: str = "is_c"
-
-    def __init__(self, data, *, host_key: str | None = None,
-                 central_key: str | None = None, **kw):
-        if host_key is not None:
-            self.host_key = host_key
-        if central_key is not None:
-            self.central_key = central_key
-        super().__init__(data, **kw)
-
-    @property
-    def host_ids(self) -> np.ndarray:
-        return np.asarray(self.data[self.host_key])
-
-    @property
-    def is_central(self) -> np.ndarray:
-        if self.central_key in self.data:
-            return np.asarray(self.data[self.central_key], dtype=bool)
-        if self.id_key is not None and self.id_key in self.data:
-            return self.ids == self.host_ids
-        raise KeyError(f"need {self.central_key!r}, or {self.id_key!r} and "
-                       f"{self.host_key!r}")
-
-    def centrals(self) -> "HostedTracer":
-        return self.subset(self.is_central)
-
-    def satellites(self) -> "HostedTracer":
-        return self.subset(~self.is_central)
-
-    def n_per_host(self) -> tuple[np.ndarray, np.ndarray]:
-        """Unique host ids and the number of members of each."""
-        return np.unique(self.host_ids, return_counts=True)
-
-    def host_index(self, hosts: Tracer, host_id_key: str | None = None) -> np.ndarray:
-        """Row of every object's host in ``hosts`` (``-1`` if absent)."""
-        key = host_id_key or hosts.id_key
-        if key is None:
-            raise ValueError("hosts has no id_key; pass host_id_key")
-        hid = np.asarray(hosts[key])
-        order = np.argsort(hid, kind="stable")
-        sorted_ids = hid[order]
-        pos = np.searchsorted(sorted_ids, self.host_ids)
-        pos_c = np.clip(pos, 0, len(sorted_ids) - 1)
-        found = (pos < len(sorted_ids)) & (sorted_ids[pos_c] == self.host_ids)
-        return np.where(found, order[pos_c], -1)
-
-    def attach_host(self, hosts: Tracer, keys, *, prefix: str = "host_",
-                    host_id_key: str | None = None, fill=np.nan) -> None:
-        """Copy host columns ``keys`` to every member as ``prefix + key``."""
-        idx = self.host_index(hosts, host_id_key)
-        ok = idx >= 0
-        for k in ([keys] if isinstance(keys, str) else keys):
-            src = np.asarray(hosts[k])
-            out = np.full((self.n_objs,) + src.shape[1:], fill,
-                          dtype=np.result_type(src.dtype, np.asarray(fill).dtype))
-            out[ok] = src[idx[ok]]
-            self[prefix + k] = out

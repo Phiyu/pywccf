@@ -120,8 +120,7 @@ class Field(HasLog):
 
     def smoothed(self, R: float, key: str | None = None,
                  deconvolve: str | None = None) -> np.ndarray:
-        return gaussian_smooth(self.value(key).astype(np.float64), self.mesh,
-                               R, deconvolve)
+        return gaussian_smooth(self.value(key).astype(np.float64), self.mesh, R, deconvolve)
 
     def node_positions(self, sel: np.ndarray | None = None) -> np.ndarray:
         if sel is None:

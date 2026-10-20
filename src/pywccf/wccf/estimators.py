@@ -359,18 +359,13 @@ class WCCF1D(_WCCFBase):
                 out[name] = jackknife(S_k[name], W_k, transform)
         res = {}
         for name, (xi, sd, smp) in out.items():
-            meta = self._meta(cells, error, n_jk_side, 0, 0, method="fft",
-                              scheme=self.scheme if self.tracer is not None
-                              else None)
+            meta = self._meta(cells, error, n_jk_side, 0, 0, method="fft", 
+            scheme=self.scheme if self.tracer is not None else None)
             meta["n_cells"] = cells.n
-            res[name] = WCCFResult(xi=xi, xi_sd=sd, bins=self.bins,
-                                   web=cells.web, name=name, method="fft",
-                                   error=error, samples=smp, meta=meta)
+            res[name] = WCCFResult(xi=xi, xi_sd=sd, bins=self.bins, web=cells.web, name=name, method="fft", error=error, samples=smp, meta=meta)
         return res
 
-    def compute(self, web, samples=None, *, error: str = "jackknife",
-                n_jk_side: int = 4, n_bootstrap: int = 100,
-                seed: int = 0) -> dict[str, WCCFResult]:
+    def compute(self, web, samples=None, *, error: str = "jackknife", n_jk_side: int = 4, n_bootstrap: int = 100, seed: int = 0) -> dict[str, WCCFResult]:
         if self.method == "fft":
             return self._compute_fft(web, samples, error, n_jk_side)
         return self._compute_ph(web, samples, error, n_jk_side, n_bootstrap,

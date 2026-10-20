@@ -1,21 +1,17 @@
 """Galaxies (simulated or observed)."""
 from __future__ import annotations
 
-from .tracer import HostedTracer
+from .tracer import Tracer
 
 __all__ = ["GalaxySample"]
 
 
-class GalaxySample(HostedTracer):
-    """Galaxies with their host.
+class GalaxySample(Tracer):
+    """Galaxies.
 
-    ``host_id`` is the id of the host halo / group (e.g. the group id of a
-    group catalogue, or the id of the host subhalo for a semi-analytic
-    model); ``is_c`` flags centrals when available, otherwise a galaxy is
-    central iff ``galaxy_id == host_id``.  ``mass`` is the stellar mass,
-    log10(M_* / h^-1 Msun) by default.
+    Required keys: ``position``, ``mass`` = log10(M_* / h^-1 Msun),
+    ``central`` (bool) and ``host_id`` (int, the ``id`` of the host halo or
+    group).  Same host methods as :class:`SubhaloSample`.
     """
 
-    id_key = "galaxy_id"
-    host_key = "host_id"
-    central_key = "is_c"
+    required_keys = ("position", "mass", "central", "host_id")

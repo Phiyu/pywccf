@@ -60,7 +60,7 @@ def synthetic_box(n_grids: int = 64, l_box: float = 128.0, *,
     """``(matter, tidal, halos)`` of a synthetic periodic box.
 
     halos: ``position``, ``mass`` (log10, 11.5--14), ``zf`` (higher in
-    denser regions at fixed mass), ``is_backsplash`` (0), ``halo_id``.
+    denser regions at fixed mass), ``is_backsplash`` (0), ``id``.
     """
     mesh = Mesh(n_grids, l_box)
     delta = lognormal_delta(mesh, sigma=sigma, seed=seed)
@@ -76,7 +76,7 @@ def synthetic_box(n_grids: int = 64, l_box: float = 128.0, *,
                  + 0.4 * rng.standard_normal(n), 0.02, 6.0)
     halos = HaloSample({"position": xs, "mass": mass, "zf": zf,
                         "is_backsplash": np.zeros(n, dtype=np.int8),
-                        "halo_id": np.arange(n)},
+                        "id": np.arange(n)},
                        l_box=l_box, verbose=verbose,
                        meta={"synthetic": True, "seed": seed})
     return matter, tidal, halos
