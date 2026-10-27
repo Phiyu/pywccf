@@ -55,6 +55,6 @@ SandBox Test: All examples run on a synthetic box (`pywccf.utils.synthetic_box`)
 
 ## Acknowledgements
 
-Thanks to Yangyao Chen for [his code](https://github.com/ChenYangyao/dwarf_assembly_bias) for the paper ***Unexpected clustering pattern in dwarf galaxies challenges formation models*** (Ziwen Zhang et al. [Nature 2025, 642, 47-52](https://www.nature.com/articles/s41586-025-08965-5); [arXiv:2504.03305](https://arxiv.org/abs/2504.03305)).
+Thanks to Yangyao Chen et al. for [their code](https://github.com/ChenYangyao/dwarf_assembly_bias) for the paper ***Unexpected clustering pattern in dwarf galaxies challenges formation models*** (Ziwen Zhang et al. [Nature 2025, 642, 47-52](https://www.nature.com/articles/s41586-025-08965-5); [arXiv:2504.03305](https://arxiv.org/abs/2504.03305)).
 
 > After long-term development, our initial python package had become quite messy. We thank [Claude Code Opus 5.5](https://www.anthropic.com/claude-opus-5-5) for helping us clean up and reorganize it. The authors used Claude Code legally in WI, USA.
